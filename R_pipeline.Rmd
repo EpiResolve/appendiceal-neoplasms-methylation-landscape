@@ -993,7 +993,7 @@ process_platform <- function(m, array_name, anno_pkg, anno_string) {
     tvec  <- types[rownames(betas)]
     betas <- rowsum(betas, g, na.rm = TRUE) / rowsum((!is.na(betas)) * 1, g)
     betas[is.nan(betas)] <- NA
-    types <- tapply(tvec, g, function(x) x[1])
+        types <- tapply(tvec, g, function(x) if (length(unique(x)) == 1) x[1] else NA)
   } else {
     types <- types[rownames(betas)]
   }
@@ -1003,14 +1003,23 @@ process_platform <- function(m, array_name, anno_pkg, anno_string) {
   keep  <- !is.na(design.v)
   betas <- betas[keep, ]; design.v <- design.v[keep]
 
+    bmiq_failed <- character(0)
   bmiq <- vapply(seq_len(ncol(betas)), function(j) {
     x <- betas[, j]; ok <- !is.na(x)
     out <- rep(NA_real_, length(x))
-    out[ok] <- tryCatch(BMIQ(x[ok], design.v[ok], plots = FALSE)$nbeta,
-                        error = function(e) x[ok])
+    fit <- tryCatch(BMIQ(x[ok], design.v[ok], plots = FALSE)$nbeta,
+                    error = function(e) {
+                      bmiq_failed <<- c(bmiq_failed, colnames(betas)[j])
+                      NULL
+                    })
+    if (!is.null(fit)) out[ok] <- fit
     out
   }, numeric(nrow(betas)))
   dimnames(bmiq) <- dimnames(betas)
+
+  cat(array_name, "- CpGs:", nrow(betas),
+      "| BMIQ failures:", length(bmiq_failed), "of", ncol(betas), "\n")
+  if (length(bmiq_failed)) print(bmiq_failed)
 
   list(betas = bmiq, meta = m)
 }
@@ -1099,7 +1108,11 @@ sampleNames(rg_ipsc) <- ipsc_ids
 platform_ipsc <- annotation(rg_ipsc)[["array"]]
 
 detP_ipsc  <- detectionP(rg_ipsc)
-valid_ipsc <- names(which(rowMeans(detP_ipsc > DETP_CUTOFF) <= 0.05))
+beads_ipsc <- beadcount(rg_ipsc)
+
+ok_detP_ipsc  <- rowMeans(detP_ipsc > DETP_CUTOFF) <= 0.05
+ok_beads_ipsc <- rowMeans(is.na(beads_ipsc) | beads_ipsc < MIN_BEAD_COUNT) <= BEAD_FAIL_RATE
+valid_ipsc <- names(which(ok_detP_ipsc & ok_beads_ipsc))
 
 mset_ipsc  <- preprocessNoob(rg_ipsc, dyeMethod = "reference")
 grset_ipsc <- ratioConvert(mapToGenome(mset_ipsc), what = "both", keepCN = FALSE)
@@ -1115,7 +1128,7 @@ if (grepl("v2|V2", platform_ipsc)) {
   betas_ipsc <- rowsum(betas_ipsc, g, na.rm = TRUE) /
                 rowsum((!is.na(betas_ipsc)) * 1, g)
   betas_ipsc[is.nan(betas_ipsc)] <- NA
-  types_ipsc <- tapply(tvec, g, function(x) x[1])[rownames(betas_ipsc)]
+  types_ipsc <- tapply(tvec, g, function(x) if (length(unique(x)) == 1) x[1] else NA)[rownames(betas_ipsc)]
 }
 
 design_ipsc <- ifelse(types_ipsc == "I", 1, 2)
@@ -1124,14 +1137,22 @@ betas_ipsc  <- betas_ipsc[keep_ipsc, , drop = FALSE]
 design_ipsc <- design_ipsc[keep_ipsc]
 rn_ipsc <- rownames(betas_ipsc); cn_ipsc <- colnames(betas_ipsc)
 
+bmiq_failed_ipsc <- character(0)
 betas_ipsc <- vapply(seq_len(ncol(betas_ipsc)), function(j) {
   x <- betas_ipsc[, j]; ok <- !is.na(x)
   out <- rep(NA_real_, length(x))
-  out[ok] <- tryCatch(BMIQ(x[ok], design_ipsc[ok], plots = FALSE)$nbeta,
-                      error = function(e) x[ok])
+  fit <- tryCatch(BMIQ(x[ok], design_ipsc[ok], plots = FALSE)$nbeta,
+                  error = function(e) {
+                    bmiq_failed_ipsc <<- c(bmiq_failed_ipsc, cn_ipsc[j])
+                    NULL
+                  })
+  if (!is.null(fit)) out[ok] <- fit
   out
 }, numeric(length(rn_ipsc)))
 dimnames(betas_ipsc) <- list(rn_ipsc, cn_ipsc)
+
+cat("iPSC - BMIQ failures:", length(bmiq_failed_ipsc), "of", ncol(betas_ipsc), "\n")
+if (length(bmiq_failed_ipsc)) print(bmiq_failed_ipsc)
 
 common_cpgs <- intersect(rownames(betas_scoring), rownames(betas_ipsc))
 betas_combined <- cbind(betas_scoring[common_cpgs, ], betas_ipsc[common_cpgs, ])
